@@ -1,0 +1,93 @@
+version: "0.1"
+
+networks:
+    localNetwork:
+        driver: bridge
+        name: network
+
+services:
+
+    cache:
+        image: cache:latest
+        container_name: cache
+        ports:
+            - ${MYSQL_PORT}:3306
+        restart: on-failure
+        healthcheck:
+            test: ["CMD", "mysqladmin" ,"ping", "--host=localhost", "--port=3306", "--user=${MYSQL_USER}", "--password=${MYSQL_PASSWORD}"]
+            timeout: 1s
+            retries: 10
+        command:
+            - --explicit_defaults_for_timestamp=1
+        networks:
+            - localNetwork
+
+    init-cache:
+        image: cache:latest
+        container_name: init-cache
+        restart: "no"
+        volumes:
+            - ./cache/init.sh:/opt/init.sh
+        depends_on:
+            cache:
+                condition: service_healthy
+        networks:
+            - localNetwork
+        command:
+            - --explicit_defaults_for_timestamp=1
+        entrypoint: [ "sh" , "/opt/init.sh" ]
+
+    s3:
+        image: minio/minio
+        container_name: s3
+        restart: always
+        env_file:
+            - .env
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+            timeout: 1s
+            retries: 10
+        ports:
+            - ${MINIO_PORT}:9000
+            - ${MINIO_PORT_UI}:${MINIO_PORT_UI}
+        networks:
+            - localNetwork
+        command: server /data/mybucket --console-address ":${MINIO_PORT_UI}"
+
+    init-s3:
+        image: minio/mc
+        container_name: init-s3
+        restart: "no"
+        env_file:
+            - .env
+        volumes:
+            - ./s3/init.sh:/opt/init.sh
+            - ./s3/sessions.csv:/opt/sessions.csv
+            - ./cache/venues.csv:/opt/venues.csv
+            - ./s3/weights.cbm:/opt/weights.cbm
+        depends_on:
+            s3:
+                condition: service_healthy
+        networks:
+            - localNetwork
+        entrypoint: [ "sh" , "/opt/init.sh" ]
+
+    app:
+        image: app:latest
+        container_name: app
+        restart: always
+        depends_on:
+            init-cache:
+                condition: service_completed_successfully
+            init-s3:
+                condition: service_completed_successfully
+        ports:
+            - ${APP_PORT}:80
+        networks:
+            - localNetwork
+        env_file:
+            - .env
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:${APP_PORT}/ping"]
+            timeout: 1s
+            retries: 10
